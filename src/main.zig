@@ -24,7 +24,7 @@ pub fn main(init: std.process.Init) !void {
 
     const apps = try twig.listRunningApps(arena);
     for (apps) |app| {
-        std.debug.print("PID: {d: >6}  |  {s}\n", .{ app.pid, app.getName() });
+        std.debug.print("PID: {d: >6}  |  Owner: {s} | Name: {s}\n", .{ app.pid, app.getOwner(), app.getName() });
     }
     std.debug.print("\nFound {d} visible apps.\n", .{apps.len});
 }

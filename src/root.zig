@@ -101,11 +101,17 @@ const AppExcludes = [_][]const u8{
 
 pub const App = struct {
     pid: i32,
+    owner: [512]u8,
+    owner_len: usize,
     name: [512]u8,
     name_len: usize,
 
     pub fn getName(self: *const App) []const u8 {
         return self.name[0..self.name_len];
+    }
+
+    pub fn getOwner(self: *const App) []const u8 {
+        return self.owner[0..self.owner_len];
     }
 };
 
@@ -119,17 +125,20 @@ pub fn listRunningApps(allocator: std.mem.Allocator) ![]App {
     errdefer apps.deinit(allocator);
 
     const options = kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements;
-    const window_list = CGWindowListCopyWindowInfo(options, kCGNullWindowID);
+    const wins = CGWindowListCopyWindowInfo(options, kCGNullWindowID);
 
-    const wl = window_list orelse return TwigError.FailedToGetWindowList;
+    const wl = wins orelse return TwigError.FailedToGetWindowList;
 
     defer CFRelease(wl);
+
+    const key_owner_pid = CFStringCreateWithCString(null, "kCGWindowOwnerPID", kCFStringEncodingUTF8) orelse return TwigError.FailedToCreateKey;
+    defer CFRelease(key_owner_pid);
 
     const key_owner_name = CFStringCreateWithCString(null, "kCGWindowOwnerName", kCFStringEncodingUTF8) orelse return TwigError.FailedToCreateKey;
     defer CFRelease(key_owner_name);
 
-    const key_owner_pid = CFStringCreateWithCString(null, "kCGWindowOwnerPID", kCFStringEncodingUTF8) orelse return TwigError.FailedToCreateKey;
-    defer CFRelease(key_owner_pid);
+    const key_window_name = CFStringCreateWithCString(null, "kCGWindowName", kCFStringEncodingUTF8) orelse return TwigError.FailedToCreateKey;
+    defer CFRelease(key_window_name);
 
     const count = CFArrayGetCount(wl);
     var i: isize = 0;
@@ -149,15 +158,29 @@ pub fn listRunningApps(allocator: std.mem.Allocator) ![]App {
             );
         }
 
+        var owner_buf: [512]u8 = undefined;
+        var owner_len: usize = 0;
+
+        const owner_val = CFDictionaryGetValue(dict, key_owner_name);
+        if (owner_val) |nv| {
+            if (CFStringGetCString(
+                @ptrCast(@constCast(nv)),
+                &owner_buf,
+                @intCast(owner_buf.len),
+                kCFStringEncodingUTF8,
+            )) {
+                // Find the actual string length (position of null terminator)
+                owner_len = std.mem.indexOfScalar(u8, &owner_buf, 0) orelse 0;
+            }
+        }
+
         var name_buf: [512]u8 = undefined;
         var name_len: usize = 0;
 
-        const name_val = CFDictionaryGetValue(dict, key_owner_name);
+        // fallback to `Unknown` when not known.
+        // window names are specific to running applications which can be unknown
+        const name_val = CFDictionaryGetValue(dict, key_window_name);
         if (name_val) |nv| {
-            // Zig concept — undefined:
-            //   `name_buf` is declared as `undefined` above.
-            //   This means "don't waste time zero-initializing this buffer".
-            //   We're about to fill it via CFStringGetCString anyway.
             if (CFStringGetCString(
                 @ptrCast(@constCast(nv)),
                 &name_buf,
@@ -167,12 +190,19 @@ pub fn listRunningApps(allocator: std.mem.Allocator) ![]App {
                 // Find the actual string length (position of null terminator)
                 name_len = std.mem.indexOfScalar(u8, &name_buf, 0) orelse 0;
             }
+        } else {
+            const default = "Unknown";
+            @memcpy(name_buf[0..default.len], default);
+            name_len = std.mem.indexOfScalar(u8, &name_buf, 0) orelse name_buf.len;
         }
 
-        if (pid == 0 or name_len == 0) continue;
+        // skip unknowns; have no value
+        if (pid == 0) continue :running_apps_loop;
+        if (owner_len == 0) continue :running_apps_loop;
 
+        // skip MacOS excludes
         for (AppExcludes) |excluded| {
-            if (std.mem.eql(u8, excluded, name_buf[0..name_len])) {
+            if (std.mem.eql(u8, excluded, owner_buf[0..owner_len])) {
                 continue :running_apps_loop;
             }
         }
@@ -184,10 +214,12 @@ pub fn listRunningApps(allocator: std.mem.Allocator) ![]App {
                 break;
             }
         }
-        if (already_seen) continue;
+        if (already_seen) continue :running_apps_loop;
 
-        try apps.append(allocator, .{
+        try apps.append(allocator, App{
             .pid = pid,
+            .owner = owner_buf,
+            .owner_len = owner_len,
             .name = name_buf,
             .name_len = name_len,
         });
