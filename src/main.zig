@@ -24,8 +24,8 @@ pub fn main(init: std.process.Init) !void {
 
     const apps = try twig.listRunningApps(arena);
     for (apps) |app| {
-        std.debug.print("PID: {d: >6} | WinID: {d: >6} | Owner: {s: <15} | Bounds(x:{d} y:{d} w:{d} h:{d}) | Name: {s}\n", 
-            .{ app.pid, app.window_id, app.getOwner(), app.bounds.x, app.bounds.y, app.bounds.width, app.bounds.height, app.getName() });
+        std.debug.print("PID: {d: >6} | WinID: {d: >6} | Layer: {d: >3} | Alpha: {d:.2} | Owner: {s: <15} | Bounds(x:{d} y:{d} w:{d} h:{d}) | Name: {s}\n", 
+            .{ app.pid, app.window_id, app.layer, app.alpha, app.getOwner(), app.bounds.x, app.bounds.y, app.bounds.width, app.bounds.height, app.getName() });
     }
     std.debug.print("\nFound {d} visible apps.\n", .{apps.len});
 }

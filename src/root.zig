@@ -33,6 +33,7 @@ pub const kCGNullWindowID: CGWindowID = 0;
 // CFNumber type enum — we only need kCFNumberIntType (= 9)
 pub const CFNumberType = i64;
 pub const kCFNumberIntType: CFNumberType = 9;
+pub const kCFNumberDoubleType: CFNumberType = 13;
 
 //
 // CFString encoding — we only need UTF-8 (= 0x08000100)
@@ -133,6 +134,8 @@ pub const App = struct {
     name: [512]u8,
     name_len: usize,
     window_id: u32,
+    layer: i32 = 0,
+    alpha: f64 = 1.0,
     bounds: AppBounds = .{
         .x = 0,
         .y = 0,
@@ -180,6 +183,12 @@ pub fn listRunningApps(allocator: std.mem.Allocator) ![]App {
     const key_window_bounds = CFStringCreateWithCString(null, "kCGWindowBounds", kCFStringEncodingUTF8) orelse return TwigError.FailedToCreateKey;
     defer CFRelease(key_window_bounds);
 
+    const key_window_layer = CFStringCreateWithCString(null, "kCGWindowLayer", kCFStringEncodingUTF8) orelse return TwigError.FailedToCreateKey;
+    defer CFRelease(key_window_layer);
+
+    const key_window_alpha = CFStringCreateWithCString(null, "kCGWindowAlpha", kCFStringEncodingUTF8) orelse return TwigError.FailedToCreateKey;
+    defer CFRelease(key_window_alpha);
+
     const count = CFArrayGetCount(wl);
     var i: isize = 0;
 
@@ -206,6 +215,16 @@ pub fn listRunningApps(allocator: std.mem.Allocator) ![]App {
                 kCFNumberIntType,
                 @ptrCast(&window_id),
             );
+        }
+
+        var layer: i32 = 0;
+        if (CFDictionaryGetValue(dict, key_window_layer)) |lv| {
+            _ = CFNumberGetValue(@ptrCast(@constCast(lv)), kCFNumberIntType, @ptrCast(&layer));
+        }
+
+        var alpha: f64 = 1.0;
+        if (CFDictionaryGetValue(dict, key_window_alpha)) |av| {
+            _ = CFNumberGetValue(@ptrCast(@constCast(av)), kCFNumberDoubleType, @ptrCast(&alpha));
         }
 
         var bounds = AppBounds{ .x = 0, .y = 0, .width = 0, .height = 0 };
@@ -281,6 +300,8 @@ pub fn listRunningApps(allocator: std.mem.Allocator) ![]App {
         try apps.append(allocator, App{
             .pid = pid,
             .window_id = window_id,
+            .layer = layer,
+            .alpha = alpha,
             .owner = owner_buf,
             .owner_len = owner_len,
             .name = name_buf,
