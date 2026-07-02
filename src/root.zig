@@ -45,6 +45,24 @@ pub extern "c" fn CGWindowListCopyWindowInfo(
     option: CGWindowListOption,
     relativeToWindow: CGWindowID,
 ) ?CFArrayRef;
+
+// CoreGraphics: CGRect geometry types
+pub const CGFloat = f64; // On 64-bit macOS, CGFloat is double
+pub const CGPoint = extern struct {
+    x: CGFloat,
+    y: CGFloat,
+};
+pub const CGSize = extern struct {
+    width: CGFloat,
+    height: CGFloat,
+};
+pub const CGRect = extern struct {
+    origin: CGPoint,
+    size: CGSize,
+};
+// Helper to parse kCGWindowBounds into a CGRect
+pub extern "c" fn CGRectMakeWithDictionaryRepresentation(dict: CFDictionaryRef, rect: *CGRect) bool;
+
 // CoreFoundation: work with CFArray
 pub extern "c" fn CFArrayGetCount(theArray: CFArrayRef) isize;
 pub extern "c" fn CFArrayGetValueAtIndex(theArray: CFArrayRef, idx: isize) ?*const anyopaque;
@@ -99,12 +117,28 @@ const AppExcludes = [_][]const u8{
     "ScreensaverEngine",
 };
 
+// We use i32 for bounds, even though macOS natively returns f64 (CGFloat) for these values.
+// Logical screen coordinates are almost always whole numbers.
+pub const AppBounds = struct {
+    x: i32,
+    y: i32,
+    width: i32,
+    height: i32,
+};
+
 pub const App = struct {
     pid: i32,
     owner: [512]u8,
     owner_len: usize,
     name: [512]u8,
     name_len: usize,
+    window_id: u32,
+    bounds: AppBounds = .{
+        .x = 0,
+        .y = 0,
+        .width = 0,
+        .height = 0,
+    },
 
     pub fn getName(self: *const App) []const u8 {
         return self.name[0..self.name_len];
@@ -140,10 +174,16 @@ pub fn listRunningApps(allocator: std.mem.Allocator) ![]App {
     const key_window_name = CFStringCreateWithCString(null, "kCGWindowName", kCFStringEncodingUTF8) orelse return TwigError.FailedToCreateKey;
     defer CFRelease(key_window_name);
 
+    const key_window_id = CFStringCreateWithCString(null, "kCGWindowNumber", kCFStringEncodingUTF8) orelse return TwigError.FailedToCreateKey;
+    defer CFRelease(key_window_id);
+
+    const key_window_bounds = CFStringCreateWithCString(null, "kCGWindowBounds", kCFStringEncodingUTF8) orelse return TwigError.FailedToCreateKey;
+    defer CFRelease(key_window_bounds);
+
     const count = CFArrayGetCount(wl);
     var i: isize = 0;
 
-    running_apps_loop: while (i < count) : (i += 1) {
+    apps_loop: while (i < count) : (i += 1) {
         const dict_ptr = CFArrayGetValueAtIndex(wl, i) orelse continue;
         const dict: CFDictionaryRef = @ptrCast(@constCast(dict_ptr));
 
@@ -156,6 +196,28 @@ pub fn listRunningApps(allocator: std.mem.Allocator) ![]App {
                 kCFNumberIntType,
                 @ptrCast(&pid),
             );
+        }
+
+        var window_id: u32 = 0;
+        const window_id_val = CFDictionaryGetValue(dict, key_window_id);
+        if (window_id_val) |wv| {
+            _ = CFNumberGetValue(
+                @ptrCast(@constCast(wv)),
+                kCFNumberIntType,
+                @ptrCast(&window_id),
+            );
+        }
+
+        var bounds = AppBounds{ .x = 0, .y = 0, .width = 0, .height = 0 };
+        const bounds_val = CFDictionaryGetValue(dict, key_window_bounds);
+        if (bounds_val) |bv| {
+            var rect: CGRect = undefined;
+            if (CGRectMakeWithDictionaryRepresentation(@ptrCast(@constCast(bv)), &rect)) {
+                bounds.x = @intFromFloat(rect.origin.x);
+                bounds.y = @intFromFloat(rect.origin.y);
+                bounds.width = @intFromFloat(rect.size.width);
+                bounds.height = @intFromFloat(rect.size.height);
+            }
         }
 
         var owner_buf: [512]u8 = undefined;
@@ -193,17 +255,17 @@ pub fn listRunningApps(allocator: std.mem.Allocator) ![]App {
         } else {
             const default = "Unknown";
             @memcpy(name_buf[0..default.len], default);
-            name_len = std.mem.indexOfScalar(u8, &name_buf, 0) orelse name_buf.len;
+            name_len = default.len;
         }
 
         // skip unknowns; have no value
-        if (pid == 0) continue :running_apps_loop;
-        if (owner_len == 0) continue :running_apps_loop;
+        if (pid == 0) continue :apps_loop;
+        if (owner_len == 0) continue :apps_loop;
 
         // skip MacOS excludes
         for (AppExcludes) |excluded| {
             if (std.mem.eql(u8, excluded, owner_buf[0..owner_len])) {
-                continue :running_apps_loop;
+                continue :apps_loop;
             }
         }
 
@@ -214,14 +276,16 @@ pub fn listRunningApps(allocator: std.mem.Allocator) ![]App {
                 break;
             }
         }
-        if (already_seen) continue :running_apps_loop;
+        if (already_seen) continue :apps_loop;
 
         try apps.append(allocator, App{
             .pid = pid,
+            .window_id = window_id,
             .owner = owner_buf,
             .owner_len = owner_len,
             .name = name_buf,
             .name_len = name_len,
+            .bounds = bounds,
         });
     }
 
